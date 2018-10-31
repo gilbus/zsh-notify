@@ -22,6 +22,10 @@
             echo iterm2
         elif [[ "$TERM_PROGRAM" == 'Apple_Terminal' ]]; then
             echo apple-terminal
+        elif [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
+            if [[ "$DESKTOP_SESSION" == "sway" ]]; then
+                echo sway
+            fi
         elif [[ "$DISPLAY" != '' ]] && which xdotool > /dev/null 2>&1; then
             echo xdotool
         else
@@ -85,7 +89,22 @@
                 if [[ "true" == $(osascript "$resources_dir"/is-"$term_id"-active.applescript "$current_tty") ]]; then
                     return 0
                 fi
-            ;;
+                ;;
+            "sway")
+                local active_wid wid
+
+                # query pid of active window from sway tree
+                active_wid=$(swaymsg -t get_tree | jq 'recurse(.nodes[]) |
+                    if (.focused) then .pid else empty end')
+
+                # query pid of active terminal and store it inside wid
+                zstyle -s ':notify:' window-pid wid \
+                    || zstyle -s ':notify:' parent-pid wid
+
+                if [[ "$active_wid" == "$wid" ]]; then
+                    return 0
+                fi
+                ;;
             "xdotool")
                 local active_wid wid
 
@@ -209,15 +228,33 @@
                 fi
             fi
 
-            if which wmctrl > /dev/null 2>&1; then
-                local parent_pid
+            if [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
+                if [[ "$DESKTOP_SESSION" == "sway" ]]; then
+                    local parent_pid
+                    local sway_id
 
-                zstyle -s ':notify:' parent-pid parent_pid
+                    zstyle -s ':notify:' parent-pid parent_pid
+                    # determine sway-internal id of active window
+                    sway_id=$(swaymsg -t get_tree | jq --arg ppid $parent_pid 'def toint(s): s|tonumber;
+                    recurse(.nodes[]) | if (toint($ppid) == .pid) then .id else empty end')
+                    if zstyle -t ':notify:' activate-terminal; then
+                        # and focus it
+                        swaymsg "[con_id=$sway_id] focus"
+                    elif ! (zstyle -t ':notify:' disable-urgent); then
+                        swaymsg "[con_id=$sway_id] urgent enable"
+                    fi
+                fi
+            else
+                if which wmctrl > /dev/null 2>&1 && [[ "$XDG_SESSION_TYPE" != "wayland" ]]; then
+                    local parent_pid
 
-                if zstyle -t ':notify:' activate-terminal; then
-                    wmctrl -ia $(wmctrl -lp | awk -vpid=$parent_pid '$3==pid {print $1; exit}')
-                elif ! (zstyle -t ':notify:' disable-urgent); then
-                    wmctrl -i -r $(wmctrl -lp | awk -vpid=$parent_pid '$3==pid {print $1; exit}') -b add,demands_attention
+                    zstyle -s ':notify:' parent-pid parent_pid
+
+                    if zstyle -t ':notify:' activate-terminal; then
+                        wmctrl -ia $(wmctrl -lp | awk -vpid=$parent_pid '$3==pid {print $1; exit}')
+                    elif ! (zstyle -t ':notify:' disable-urgent); then
+                        wmctrl -i -r $(wmctrl -lp | awk -vpid=$parent_pid '$3==pid {print $1; exit}') -b add,demands_attention
+                    fi
                 fi
             fi
         }
